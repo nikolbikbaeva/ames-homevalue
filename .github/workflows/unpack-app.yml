@@ -1,0 +1,51 @@
+name: Unpack uploaded app
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract app files
+        run: |
+          python3 - <<'PY'
+          import zipfile, pathlib, os, shutil
+          src=pathlib.Path("HomePrice_Market_Complete_One_Click.zip")
+          if not src.exists():
+              raise SystemExit("The app ZIP was not found")
+          with zipfile.ZipFile(src) as z:
+              files=[i for i in z.infolist() if not i.is_dir()]
+              if len(files)>1000 or sum(i.file_size for i in files)>100_000_000:
+                  raise SystemExit("Archive is too large to unpack safely")
+              roots=[pathlib.PurePosixPath(i.filename).parts for i in files if not i.filename.startswith("__MACOSX/")]
+              prefix=roots[0][0] if roots and all(len(p)>1 and p[0]==roots[0][0] for p in roots) else None
+              for item in files:
+                  raw=item.filename
+                  parts=pathlib.PurePosixPath(raw).parts
+                  if not parts or raw.startswith("__MACOSX/") or raw.endswith(".DS_Store"):
+                      continue
+                  if raw.startswith("/") or ".." in parts or "\\" in raw:
+                      raise SystemExit(f"Unsafe ZIP entry: {raw}")
+                  if (item.external_attr >> 16) & 0o170000 == 0o120000:
+                      raise SystemExit(f"Symlink entry not allowed: {raw}")
+                  rel=pathlib.Path(*parts[1:]) if prefix else pathlib.Path(*parts)
+                  if not rel.parts:
+                      continue
+                  target=pathlib.Path(".")/rel
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  with z.open(item) as incoming,open(target,"wb") as outgoing:
+                      shutil.copyfileobj(incoming,outgoing)
+          PY
+      - name: Commit extracted app
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Extract app source files"
+            git push
+          fi
